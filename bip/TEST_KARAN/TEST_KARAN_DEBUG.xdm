@@ -1,0 +1,596 @@
+<?xml version = '1.0' encoding = 'utf-8'?>
+<dataModel xmlns="http://xmlns.oracle.com/oxp/xmlp" version="2.1" xmlns:xdm="http://xmlns.oracle.com/oxp/xmlp" xmlns:xsd="http://wwww.w3.org/2001/XMLSchema" defaultDataSourceRef="Oracle BI EE">
+   <dataProperties>
+      <property name="include_parameters" value="true"/>
+      <property name="include_null_Element" value="false"/>
+      <property name="include_rowsettag" value="false"/>
+      <property name="exclude_tags_for_lob" value="false"/>
+      <property name="EXCLUDE_LINE_FEED_AND_CARRIAGE_RETURN_FOR_LOB" value="false"/>
+      <property name="xml_tag_case" value="upper"/>
+      <property name="enforce_validation_status" value="true"/>
+      <property name="optimize_query_executions" value="false"/>
+      <property name="enable_xml_chunks" value=""/>
+      <property name="sql_monitor_report_generated" value="false"/>
+   </dataProperties>
+   <dataSets>
+      <dataSet name="1" type="complex">
+         <sql dataSourceRef="ApplicationDB_FSCM">
+            <![CDATA[SELECT prh.requisition_header_id,
+       prh.requisition_number,
+       prh.preparer_id,
+       prh.overriding_approver_id,
+       NVL(prh.overriding_approver_id, prh.preparer_id) AS root_person_id_table
+FROM   por_requisition_headers_all prh
+WHERE  prh.requisition_header_id = TO_NUMBER(:req_header_id)]]>
+         </sql>
+      </dataSet>
+      <dataSet name="1b" type="complex">
+         <sql dataSourceRef="ApplicationDB_FSCM">
+            <![CDATA[SELECT TO_NUMBER(:preparer_person_id) AS preparer_bind,
+       prh.preparer_id AS preparer_on_header,
+       CASE WHEN TO_NUMBER(:preparer_person_id) = prh.preparer_id THEN 'MATCH' ELSE 'MISMATCH' END AS bind_check
+FROM   por_requisition_headers_all prh
+WHERE  prh.requisition_header_id = TO_NUMBER(:req_header_id)]]>
+         </sql>
+      </dataSet>
+      <dataSet name="9" type="complex">
+         <sql dataSourceRef="ApplicationDB_FSCM">
+            <![CDATA[WITH req_hdr AS (
+  SELECT NVL(prh.overriding_approver_id, prh.preparer_id) AS root_table,
+         prh.preparer_id
+  FROM por_requisition_headers_all prh
+  WHERE prh.requisition_header_id = TO_NUMBER(:req_header_id)
+)
+SELECT rh.root_table,
+       TO_NUMBER(:preparer_person_id) AS root_bind_preparer,
+       CASE WHEN rh.root_table = TO_NUMBER(:preparer_person_id) THEN 'SAME' ELSE 'DIFFERENT' END AS compare_root
+FROM req_hdr rh]]>
+         </sql>
+      </dataSet>
+      <dataSet name="2" type="complex">
+         <sql dataSourceRef="ApplicationDB_FSCM">
+            <![CDATA[SELECT prh.requisition_header_id,
+       SUM(CASE WHEN gcc.segment2 BETWEEN '0020007' AND '0020009'
+                THEN NVL(prd.distribution_amount, 0) ELSE 0 END) AS inv_total,
+       SUM(CASE WHEN gcc.segment2 BETWEEN '0020007' AND '0020009'
+                THEN 0 ELSE NVL(prd.distribution_amount, 0) END) AS exp_total
+FROM   por_requisition_headers_all prh
+JOIN   por_requisition_lines_all    prl ON prl.requisition_header_id = prh.requisition_header_id
+JOIN   por_req_distributions_all    prd ON prd.requisition_line_id    = prl.requisition_line_id
+JOIN   gl_code_combinations         gcc ON gcc.code_combination_id    = prd.code_combination_id
+WHERE  prh.requisition_header_id = TO_NUMBER(:req_header_id)
+GROUP BY prh.requisition_header_id]]>
+         </sql>
+      </dataSet>
+      <dataSet name="3" type="complex">
+         <sql dataSourceRef="ApplicationDB_FSCM">
+            <![CDATA[WITH pr_totals AS (
+  SELECT prh.requisition_header_id,
+         SUM(CASE WHEN gcc.segment2 BETWEEN '0020007' AND '0020009'
+                  THEN NVL(prd.distribution_amount, 0) ELSE 0 END) AS inv_total,
+         SUM(CASE WHEN gcc.segment2 BETWEEN '0020007' AND '0020009'
+                  THEN 0 ELSE NVL(prd.distribution_amount, 0) END) AS exp_total
+  FROM   por_requisition_headers_all prh
+  JOIN   por_requisition_lines_all    prl ON prl.requisition_header_id = prh.requisition_header_id
+  JOIN   por_req_distributions_all    prd ON prd.requisition_line_id    = prl.requisition_line_id
+  JOIN   gl_code_combinations         gcc ON gcc.code_combination_id    = prd.code_combination_id
+  WHERE  prh.requisition_header_id = TO_NUMBER(:req_header_id)
+  GROUP BY prh.requisition_header_id
+)
+SELECT NVL(MAX(t.inv_total), 0) AS inv_total_agg,
+       NVL(MAX(t.exp_total), 0) AS exp_total_agg
+FROM   pr_totals t]]>
+         </sql>
+      </dataSet>
+      <dataSet name="4" type="complex">
+         <sql dataSourceRef="ApplicationDB_FSCM">
+            <![CDATA[WITH req_hdr AS (
+  SELECT prh.overriding_approver_id, prh.preparer_id
+  FROM   por_requisition_headers_all prh
+  WHERE  prh.requisition_header_id = TO_NUMBER(:req_header_id)
+),
+root_ctx AS (
+  SELECT NVL(rh.overriding_approver_id, rh.preparer_id) AS root_person_id
+  FROM   req_hdr rh
+),
+mgr_edges AS (
+  SELECT DISTINCT pasf.person_id, pasf.manager_id
+  FROM   per_assignment_supervisors_f pasf
+  WHERE  pasf.manager_type = 'LINE_MANAGER'
+  AND    pasf.effective_start_date <= TRUNC(SYSDATE)
+  AND    (pasf.effective_end_date IS NULL OR pasf.effective_end_date >= TRUNC(SYSDATE))
+  AND    pasf.manager_id IS NOT NULL
+  AND    pasf.manager_id <> pasf.person_id
+),
+mgr_chain_base AS (
+  SELECT CAST(1 AS NUMBER(10, 0)) AS lvl, rc.root_person_id AS person_id
+  FROM   root_ctx rc
+  UNION ALL
+  SELECT CAST(LEVEL + 1 AS NUMBER(10, 0)), e.manager_id
+  FROM   mgr_edges e
+  CONNECT BY NOCYCLE PRIOR e.manager_id = e.person_id
+  START WITH e.person_id = (SELECT root_person_id FROM root_ctx)
+)
+SELECT COUNT(*) AS chain_rows, MIN(lvl) AS min_lvl, MAX(lvl) AS max_lvl
+FROM   mgr_chain_base]]>
+         </sql>
+      </dataSet>
+      <dataSet name="5" type="complex">
+         <sql dataSourceRef="ApplicationDB_FSCM">
+            <![CDATA[SELECT ffv.lookup_code,
+       ffv.meaning,
+       ffv.description,
+       ffv.tag,
+       ffv.enabled_flag,
+       ffv.start_date_active,
+       ffv.end_date_active,
+       COUNT(*) OVER () AS total_matching_rows
+FROM   fnd_lookup_values_vl ffv
+WHERE  ffv.lookup_type = 'TER_SIGN_APPROVAL_LIMIT'
+AND    ffv.enabled_flag = 'Y'
+AND    TRIM(ffv.lookup_code) = TRIM(:one_grade_lookup_code)
+AND    NVL(ffv.start_date_active, TRUNC(SYSDATE)) <= TRUNC(SYSDATE)
+AND    (ffv.end_date_active IS NULL OR ffv.end_date_active >= TRUNC(SYSDATE))
+ORDER BY  ffv.lookup_code]]>
+         </sql>
+      </dataSet>
+      <dataSet name="6" type="complex">
+         <sql dataSourceRef="ApplicationDB_FSCM">
+            <![CDATA[WITH req_hdr AS (
+  SELECT prh.overriding_approver_id, prh.preparer_id
+  FROM   por_requisition_headers_all prh
+  WHERE  prh.requisition_header_id = TO_NUMBER(:req_header_id)
+),
+root_ctx AS (
+  SELECT NVL(rh.overriding_approver_id, rh.preparer_id) AS root_person_id FROM req_hdr rh
+),
+pr_totals AS (
+  SELECT prh.requisition_header_id,
+         SUM(CASE WHEN gcc.segment2 BETWEEN '0020007' AND '0020009'
+                  THEN NVL(prd.distribution_amount, 0) ELSE 0 END) inv_total,
+         SUM(CASE WHEN gcc.segment2 BETWEEN '0020007' AND '0020009'
+                  THEN 0 ELSE NVL(prd.distribution_amount, 0) END) exp_total
+  FROM por_requisition_headers_all prh
+  JOIN por_requisition_lines_all prl ON prl.requisition_header_id = prh.requisition_header_id
+  JOIN por_req_distributions_all prd ON prd.requisition_line_id = prl.requisition_line_id
+  JOIN gl_code_combinations gcc ON gcc.code_combination_id = prd.code_combination_id
+  WHERE prh.requisition_header_id = TO_NUMBER(:req_header_id)
+  GROUP BY prh.requisition_header_id
+),
+pr_totals_agg AS (
+  SELECT NVL(MAX(t.inv_total),0) inv_total, NVL(MAX(t.exp_total),0) exp_total FROM pr_totals t
+),
+grade_for_person AS (
+  SELECT x.person_id, pgt.name AS grade_lookup_code
+  FROM (
+    SELECT paf.person_id, paf.grade_id,
+           ROW_NUMBER() OVER (PARTITION BY paf.person_id ORDER BY paf.effective_start_date DESC) rn
+    FROM per_all_assignments_m paf
+    WHERE paf.primary_assignment_flag = 'Y'
+    AND paf.effective_start_date <= TRUNC(SYSDATE)
+    AND (paf.effective_end_date IS NULL OR paf.effective_end_date >= TRUNC(SYSDATE))
+  ) x
+  LEFT JOIN per_grades_f pg ON pg.grade_id = x.grade_id
+    AND pg.effective_start_date <= TRUNC(SYSDATE)
+    AND (pg.effective_end_date IS NULL OR pg.effective_end_date >= TRUNC(SYSDATE))
+  LEFT JOIN per_grades_f_tl pgt ON pgt.grade_id = x.grade_id
+    AND pgt.language = NVL(USERENV('LANG'), 'US')
+    AND pgt.effective_start_date <= TRUNC(SYSDATE)
+    AND (pgt.effective_end_date IS NULL OR pgt.effective_end_date >= TRUNC(SYSDATE))
+  WHERE x.rn = 1
+),
+username_for_person AS (
+  SELECT person_id, username FROM (
+    SELECT u.person_id, u.username,
+           ROW_NUMBER() OVER (PARTITION BY u.person_id ORDER BY NVL(u.last_update_date,u.creation_date) DESC) rn
+    FROM per_users u WHERE NVL(u.active_flag,'Y') = 'Y'
+  ) z WHERE z.rn = 1
+),
+mgr_edges AS (
+  SELECT DISTINCT pasf.person_id, pasf.manager_id
+  FROM per_assignment_supervisors_f pasf
+  WHERE pasf.manager_type = 'LINE_MANAGER'
+  AND pasf.effective_start_date <= TRUNC(SYSDATE)
+  AND (pasf.effective_end_date IS NULL OR pasf.effective_end_date >= TRUNC(SYSDATE))
+  AND pasf.manager_id IS NOT NULL AND pasf.manager_id <> pasf.person_id
+),
+mgr_chain_base AS (
+  SELECT CAST(1 AS NUMBER(10,0)) lvl, rc.root_person_id person_id FROM root_ctx rc
+  UNION ALL
+  SELECT CAST(LEVEL+1 AS NUMBER(10,0)), e.manager_id
+  FROM mgr_edges e
+  CONNECT BY NOCYCLE PRIOR e.manager_id = e.person_id
+  START WITH e.person_id = (SELECT root_person_id FROM root_ctx)
+),
+mgr_chain AS (
+  SELECT m.lvl, m.person_id, ufp.username,
+         COALESCE(NULLIF(TRIM(NVL(ppnf.first_name,'')||' '||NVL(ppnf.last_name,'')),''),
+                  ppnf.full_name) approver_name,
+         gfp.grade_lookup_code
+  FROM mgr_chain_base m
+  LEFT JOIN per_person_names_f ppnf ON ppnf.person_id = m.person_id
+    AND ppnf.name_type = 'GLOBAL'
+    AND ppnf.effective_start_date <= TRUNC(SYSDATE)
+    AND (ppnf.effective_end_date IS NULL OR ppnf.effective_end_date >= TRUNC(SYSDATE))
+  LEFT JOIN username_for_person ufp ON ufp.person_id = m.person_id
+  LEFT JOIN grade_for_person gfp ON gfp.person_id = m.person_id
+),
+scored AS (
+  SELECT mc.lvl, mc.person_id, mc.username, mc.approver_name, mc.grade_lookup_code,
+         CASE WHEN TRIM(ffv.description) IS NOT NULL
+               AND REGEXP_LIKE(TRIM(ffv.description), '^-?[0-9]+(\.[0-9]+)?$')
+              THEN TO_NUMBER(TRIM(ffv.description)) END exp_cap,
+         CASE WHEN TRIM(ffv.tag) IS NOT NULL
+               AND REGEXP_LIKE(TRIM(ffv.tag), '^-?[0-9]+(\.[0-9]+)?$')
+              THEN TO_NUMBER(TRIM(ffv.tag)) END inv_cap,
+         CASE
+           WHEN mc.grade_lookup_code IS NULL OR ffv.lookup_code IS NULL THEN 0
+           WHEN NVL(pt.exp_total,0) = 0 AND NVL(pt.inv_total,0) = 0 THEN 0
+           WHEN NVL(pt.exp_total,0) > 0 AND TRIM(ffv.description) IS NOT NULL
+            AND NOT REGEXP_LIKE(TRIM(ffv.description), '^-?[0-9]+(\.[0-9]+)?$') THEN 0
+           WHEN NVL(pt.inv_total,0) > 0 AND TRIM(ffv.tag) IS NOT NULL
+            AND NOT REGEXP_LIKE(TRIM(ffv.tag), '^-?[0-9]+(\.[0-9]+)?$') THEN 0
+           WHEN NVL(pt.exp_total,0) > 0 AND NVL(pt.inv_total,0) > 0 THEN CASE
+                  WHEN TRIM(ffv.description) IS NULL OR TRIM(ffv.tag) IS NULL THEN 0
+                  WHEN pt.exp_total <= TO_NUMBER(TRIM(ffv.description))
+                   AND pt.inv_total <= TO_NUMBER(TRIM(ffv.tag)) THEN 1 ELSE 0 END
+           WHEN NVL(pt.exp_total,0) > 0 AND NVL(pt.inv_total,0) = 0 THEN CASE
+                  WHEN TRIM(ffv.description) IS NULL THEN 0
+                  WHEN pt.exp_total <= TO_NUMBER(TRIM(ffv.description)) THEN 1 ELSE 0 END
+           WHEN NVL(pt.exp_total,0) = 0 AND NVL(pt.inv_total,0) > 0 THEN CASE
+                  WHEN TRIM(ffv.tag) IS NULL THEN 0
+                  WHEN pt.inv_total <= TO_NUMBER(TRIM(ffv.tag)) THEN 1 ELSE 0 END
+           ELSE 0
+         END can_approve
+  FROM mgr_chain mc
+  CROSS JOIN pr_totals_agg pt
+  LEFT JOIN fnd_lookup_values_vl ffv
+    ON ffv.lookup_type = 'TER_SIGN_APPROVAL_LIMIT'
+   AND ffv.enabled_flag = 'Y'
+   AND TRIM(ffv.lookup_code) = TRIM(mc.grade_lookup_code)
+   AND NVL(ffv.start_date_active, TRUNC(SYSDATE)) <= TRUNC(SYSDATE)
+   AND (ffv.end_date_active IS NULL OR ffv.end_date_active >= TRUNC(SYSDATE))
+)
+SELECT * FROM scored ORDER BY lvl]]>
+         </sql>
+      </dataSet>
+      <dataSet name="7" type="complex">
+         <sql dataSourceRef="ApplicationDB_FSCM">
+            <![CDATA[WITH req_hdr AS (
+  SELECT prh.overriding_approver_id, prh.preparer_id
+  FROM   por_requisition_headers_all prh
+  WHERE  prh.requisition_header_id = TO_NUMBER(:req_header_id)
+),
+root_ctx AS (
+  SELECT NVL(rh.overriding_approver_id, rh.preparer_id) AS root_person_id FROM req_hdr rh
+),
+pr_totals AS (
+  SELECT prh.requisition_header_id,
+         SUM(CASE WHEN gcc.segment2 BETWEEN '0020007' AND '0020009'
+                  THEN NVL(prd.distribution_amount, 0) ELSE 0 END) inv_total,
+         SUM(CASE WHEN gcc.segment2 BETWEEN '0020007' AND '0020009'
+                  THEN 0 ELSE NVL(prd.distribution_amount, 0) END) exp_total
+  FROM por_requisition_headers_all prh
+  JOIN por_requisition_lines_all prl ON prl.requisition_header_id = prh.requisition_header_id
+  JOIN por_req_distributions_all prd ON prd.requisition_line_id = prl.requisition_line_id
+  JOIN gl_code_combinations gcc ON gcc.code_combination_id = prd.code_combination_id
+  WHERE prh.requisition_header_id = TO_NUMBER(:req_header_id)
+  GROUP BY prh.requisition_header_id
+),
+pr_totals_agg AS (
+  SELECT NVL(MAX(t.inv_total),0) inv_total, NVL(MAX(t.exp_total),0) exp_total FROM pr_totals t
+),
+grade_for_person AS (
+  SELECT x.person_id, pgt.name AS grade_lookup_code
+  FROM (
+    SELECT paf.person_id, paf.grade_id,
+           ROW_NUMBER() OVER (PARTITION BY paf.person_id ORDER BY paf.effective_start_date DESC) rn
+    FROM per_all_assignments_m paf
+    WHERE paf.primary_assignment_flag = 'Y'
+    AND paf.effective_start_date <= TRUNC(SYSDATE)
+    AND (paf.effective_end_date IS NULL OR paf.effective_end_date >= TRUNC(SYSDATE))
+  ) x
+  LEFT JOIN per_grades_f pg ON pg.grade_id = x.grade_id
+    AND pg.effective_start_date <= TRUNC(SYSDATE)
+    AND (pg.effective_end_date IS NULL OR pg.effective_end_date >= TRUNC(SYSDATE))
+  LEFT JOIN per_grades_f_tl pgt ON pgt.grade_id = x.grade_id
+    AND pgt.language = NVL(USERENV('LANG'), 'US')
+    AND pgt.effective_start_date <= TRUNC(SYSDATE)
+    AND (pgt.effective_end_date IS NULL OR pgt.effective_end_date >= TRUNC(SYSDATE))
+  WHERE x.rn = 1
+),
+username_for_person AS (
+  SELECT person_id, username FROM (
+    SELECT u.person_id, u.username,
+           ROW_NUMBER() OVER (PARTITION BY u.person_id ORDER BY NVL(u.last_update_date,u.creation_date) DESC) rn
+    FROM per_users u WHERE NVL(u.active_flag,'Y') = 'Y'
+  ) z WHERE z.rn = 1
+),
+mgr_edges AS (
+  SELECT DISTINCT pasf.person_id, pasf.manager_id
+  FROM per_assignment_supervisors_f pasf
+  WHERE pasf.manager_type = 'LINE_MANAGER'
+  AND pasf.effective_start_date <= TRUNC(SYSDATE)
+  AND (pasf.effective_end_date IS NULL OR pasf.effective_end_date >= TRUNC(SYSDATE))
+  AND pasf.manager_id IS NOT NULL AND pasf.manager_id <> pasf.person_id
+),
+mgr_chain_base AS (
+  SELECT CAST(1 AS NUMBER(10,0)) lvl, rc.root_person_id person_id FROM root_ctx rc
+  UNION ALL
+  SELECT CAST(LEVEL+1 AS NUMBER(10,0)), e.manager_id
+  FROM mgr_edges e
+  CONNECT BY NOCYCLE PRIOR e.manager_id = e.person_id
+  START WITH e.person_id = (SELECT root_person_id FROM root_ctx)
+),
+mgr_chain AS (
+  SELECT m.lvl, m.person_id, ufp.username,
+         COALESCE(NULLIF(TRIM(NVL(ppnf.first_name,'')||' '||NVL(ppnf.last_name,'')),''),
+                  ppnf.full_name) approver_name,
+         gfp.grade_lookup_code
+  FROM mgr_chain_base m
+  LEFT JOIN per_person_names_f ppnf ON ppnf.person_id = m.person_id
+    AND ppnf.name_type = 'GLOBAL'
+    AND ppnf.effective_start_date <= TRUNC(SYSDATE)
+    AND (ppnf.effective_end_date IS NULL OR ppnf.effective_end_date >= TRUNC(SYSDATE))
+  LEFT JOIN username_for_person ufp ON ufp.person_id = m.person_id
+  LEFT JOIN grade_for_person gfp ON gfp.person_id = m.person_id
+),
+scored AS (
+  SELECT mc.lvl, mc.person_id,
+         CASE
+           WHEN mc.grade_lookup_code IS NULL OR ffv.lookup_code IS NULL THEN 0
+           WHEN NVL(pt.exp_total,0) = 0 AND NVL(pt.inv_total,0) = 0 THEN 0
+           WHEN NVL(pt.exp_total,0) > 0 AND TRIM(ffv.description) IS NOT NULL
+            AND NOT REGEXP_LIKE(TRIM(ffv.description), '^-?[0-9]+(\.[0-9]+)?$') THEN 0
+           WHEN NVL(pt.inv_total,0) > 0 AND TRIM(ffv.tag) IS NOT NULL
+            AND NOT REGEXP_LIKE(TRIM(ffv.tag), '^-?[0-9]+(\.[0-9]+)?$') THEN 0
+           WHEN NVL(pt.exp_total,0) > 0 AND NVL(pt.inv_total,0) > 0 THEN CASE
+                  WHEN TRIM(ffv.description) IS NULL OR TRIM(ffv.tag) IS NULL THEN 0
+                  WHEN pt.exp_total <= TO_NUMBER(TRIM(ffv.description))
+                   AND pt.inv_total <= TO_NUMBER(TRIM(ffv.tag)) THEN 1 ELSE 0 END
+           WHEN NVL(pt.exp_total,0) > 0 AND NVL(pt.inv_total,0) = 0 THEN CASE
+                  WHEN TRIM(ffv.description) IS NULL THEN 0
+                  WHEN pt.exp_total <= TO_NUMBER(TRIM(ffv.description)) THEN 1 ELSE 0 END
+           WHEN NVL(pt.exp_total,0) = 0 AND NVL(pt.inv_total,0) > 0 THEN CASE
+                  WHEN TRIM(ffv.tag) IS NULL THEN 0
+                  WHEN pt.inv_total <= TO_NUMBER(TRIM(ffv.tag)) THEN 1 ELSE 0 END
+           ELSE 0
+         END can_approve
+  FROM mgr_chain mc
+  CROSS JOIN pr_totals_agg pt
+  LEFT JOIN fnd_lookup_values_vl ffv
+    ON ffv.lookup_type = 'TER_SIGN_APPROVAL_LIMIT'
+   AND ffv.enabled_flag = 'Y'
+   AND TRIM(ffv.lookup_code) = TRIM(mc.grade_lookup_code)
+   AND NVL(ffv.start_date_active, TRUNC(SYSDATE)) <= TRUNC(SYSDATE)
+   AND (ffv.end_date_active IS NULL OR ffv.end_date_active >= TRUNC(SYSDATE))
+)
+SELECT COUNT(*) AS scored_rows,
+       SUM(can_approve) AS sum_can_approve,
+       SUM(CASE WHEN can_approve = 1 THEN 1 ELSE 0 END) AS pass_count,
+       MIN(CASE WHEN can_approve = 1 THEN lvl END) AS min_pass_lvl
+FROM scored]]>
+         </sql>
+      </dataSet>
+      <dataSet name="8" type="complex">
+         <sql dataSourceRef="ApplicationDB_FSCM">
+            <![CDATA[WITH req_hdr AS (
+  SELECT prh.overriding_approver_id, prh.preparer_id
+  FROM   por_requisition_headers_all prh
+  WHERE  prh.requisition_header_id = TO_NUMBER(:req_header_id)
+),
+root_ctx AS (
+  SELECT NVL(rh.overriding_approver_id, rh.preparer_id) AS root_person_id FROM req_hdr rh
+),
+pr_totals AS (
+  SELECT prh.requisition_header_id,
+         SUM(CASE WHEN gcc.segment2 BETWEEN '0020007' AND '0020009'
+                  THEN NVL(prd.distribution_amount, 0) ELSE 0 END) inv_total,
+         SUM(CASE WHEN gcc.segment2 BETWEEN '0020007' AND '0020009'
+                  THEN 0 ELSE NVL(prd.distribution_amount, 0) END) exp_total
+  FROM por_requisition_headers_all prh
+  JOIN por_requisition_lines_all prl ON prl.requisition_header_id = prh.requisition_header_id
+  JOIN por_req_distributions_all prd ON prd.requisition_line_id = prl.requisition_line_id
+  JOIN gl_code_combinations gcc ON gcc.code_combination_id = prd.code_combination_id
+  WHERE prh.requisition_header_id = TO_NUMBER(:req_header_id)
+  GROUP BY prh.requisition_header_id
+),
+pr_totals_agg AS (
+  SELECT NVL(MAX(t.inv_total),0) inv_total, NVL(MAX(t.exp_total),0) exp_total FROM pr_totals t
+),
+grade_for_person AS (
+  SELECT x.person_id, pgt.name AS grade_lookup_code
+  FROM (
+    SELECT paf.person_id, paf.grade_id,
+           ROW_NUMBER() OVER (PARTITION BY paf.person_id ORDER BY paf.effective_start_date DESC) rn
+    FROM per_all_assignments_m paf
+    WHERE paf.primary_assignment_flag = 'Y'
+    AND paf.effective_start_date <= TRUNC(SYSDATE)
+    AND (paf.effective_end_date IS NULL OR paf.effective_end_date >= TRUNC(SYSDATE))
+  ) x
+  LEFT JOIN per_grades_f pg ON pg.grade_id = x.grade_id
+    AND pg.effective_start_date <= TRUNC(SYSDATE)
+    AND (pg.effective_end_date IS NULL OR pg.effective_end_date >= TRUNC(SYSDATE))
+  LEFT JOIN per_grades_f_tl pgt ON pgt.grade_id = x.grade_id
+    AND pgt.language = NVL(USERENV('LANG'), 'US')
+    AND pgt.effective_start_date <= TRUNC(SYSDATE)
+    AND (pgt.effective_end_date IS NULL OR pgt.effective_end_date >= TRUNC(SYSDATE))
+  WHERE x.rn = 1
+),
+username_for_person AS (
+  SELECT person_id, username FROM (
+    SELECT u.person_id, u.username,
+           ROW_NUMBER() OVER (PARTITION BY u.person_id ORDER BY NVL(u.last_update_date,u.creation_date) DESC) rn
+    FROM per_users u WHERE NVL(u.active_flag,'Y') = 'Y'
+  ) z WHERE z.rn = 1
+),
+mgr_edges AS (
+  SELECT DISTINCT pasf.person_id, pasf.manager_id
+  FROM per_assignment_supervisors_f pasf
+  WHERE pasf.manager_type = 'LINE_MANAGER'
+  AND pasf.effective_start_date <= TRUNC(SYSDATE)
+  AND (pasf.effective_end_date IS NULL OR pasf.effective_end_date >= TRUNC(SYSDATE))
+  AND pasf.manager_id IS NOT NULL AND pasf.manager_id <> pasf.person_id
+),
+mgr_chain_base AS (
+  SELECT CAST(1 AS NUMBER(10,0)) lvl, rc.root_person_id person_id FROM root_ctx rc
+  UNION ALL
+  SELECT CAST(LEVEL+1 AS NUMBER(10,0)), e.manager_id
+  FROM mgr_edges e
+  CONNECT BY NOCYCLE PRIOR e.manager_id = e.person_id
+  START WITH e.person_id = (SELECT root_person_id FROM root_ctx)
+),
+mgr_chain AS (
+  SELECT m.lvl, m.person_id, ufp.username,
+         COALESCE(NULLIF(TRIM(NVL(ppnf.first_name,'')||' '||NVL(ppnf.last_name,'')),''),
+                  ppnf.full_name) approver_name,
+         gfp.grade_lookup_code
+  FROM mgr_chain_base m
+  LEFT JOIN per_person_names_f ppnf ON ppnf.person_id = m.person_id
+    AND ppnf.name_type = 'GLOBAL'
+    AND ppnf.effective_start_date <= TRUNC(SYSDATE)
+    AND (ppnf.effective_end_date IS NULL OR ppnf.effective_end_date >= TRUNC(SYSDATE))
+  LEFT JOIN username_for_person ufp ON ufp.person_id = m.person_id
+  LEFT JOIN grade_for_person gfp ON gfp.person_id = m.person_id
+),
+scored AS (
+  SELECT mc.lvl, mc.person_id,
+         CASE
+           WHEN mc.grade_lookup_code IS NULL OR ffv.lookup_code IS NULL THEN 0
+           WHEN NVL(pt.exp_total,0) = 0 AND NVL(pt.inv_total,0) = 0 THEN 0
+           WHEN NVL(pt.exp_total,0) > 0 AND TRIM(ffv.description) IS NOT NULL
+            AND NOT REGEXP_LIKE(TRIM(ffv.description), '^-?[0-9]+(\.[0-9]+)?$') THEN 0
+           WHEN NVL(pt.inv_total,0) > 0 AND TRIM(ffv.tag) IS NOT NULL
+            AND NOT REGEXP_LIKE(TRIM(ffv.tag), '^-?[0-9]+(\.[0-9]+)?$') THEN 0
+           WHEN NVL(pt.exp_total,0) > 0 AND NVL(pt.inv_total,0) > 0 THEN CASE
+                  WHEN TRIM(ffv.description) IS NULL OR TRIM(ffv.tag) IS NULL THEN 0
+                  WHEN pt.exp_total <= TO_NUMBER(TRIM(ffv.description))
+                   AND pt.inv_total <= TO_NUMBER(TRIM(ffv.tag)) THEN 1 ELSE 0 END
+           WHEN NVL(pt.exp_total,0) > 0 AND NVL(pt.inv_total,0) = 0 THEN CASE
+                  WHEN TRIM(ffv.description) IS NULL THEN 0
+                  WHEN pt.exp_total <= TO_NUMBER(TRIM(ffv.description)) THEN 1 ELSE 0 END
+           WHEN NVL(pt.exp_total,0) = 0 AND NVL(pt.inv_total,0) > 0 THEN CASE
+                  WHEN TRIM(ffv.tag) IS NULL THEN 0
+                  WHEN pt.inv_total <= TO_NUMBER(TRIM(ffv.tag)) THEN 1 ELSE 0 END
+           ELSE 0
+         END can_approve
+  FROM mgr_chain mc
+  CROSS JOIN pr_totals_agg pt
+  LEFT JOIN fnd_lookup_values_vl ffv
+    ON ffv.lookup_type = 'TER_SIGN_APPROVAL_LIMIT'
+   AND ffv.enabled_flag = 'Y'
+   AND TRIM(ffv.lookup_code) = TRIM(mc.grade_lookup_code)
+   AND NVL(ffv.start_date_active, TRUNC(SYSDATE)) <= TRUNC(SYSDATE)
+   AND (ffv.end_date_active IS NULL OR ffv.end_date_active >= TRUNC(SYSDATE))
+)
+SELECT lvl, person_id, COUNT(*) AS cnt
+FROM scored
+GROUP BY lvl, person_id
+HAVING COUNT(*) > 1
+ORDER BY lvl, person_id]]>
+         </sql>
+      </dataSet>
+   </dataSets>
+   <output rootName="DATA_DS" uniqueRowName="false">
+      <nodeList name="data-structure">
+         <dataStructure tagName="DATA_DS">
+            <group name="G_1" label="G_1" source="1">
+               <element name="REQUISITION_HEADER_ID" value="REQUISITION_HEADER_ID" label="REQUISITION_HEADER_ID" dataType="xsd:double" breakOrder="" fieldOrder="1"/>
+               <element name="REQUISITION_NUMBER" value="REQUISITION_NUMBER" label="REQUISITION_NUMBER" dataType="xsd:string" breakOrder="" fieldOrder="2"/>
+               <element name="PREPARER_ID" value="PREPARER_ID" label="PREPARER_ID" dataType="xsd:double" breakOrder="" fieldOrder="3"/>
+               <element name="OVERRIDING_APPROVER_ID" value="OVERRIDING_APPROVER_ID" label="OVERRIDING_APPROVER_ID" dataType="xsd:double" breakOrder="" fieldOrder="4"/>
+               <element name="ROOT_PERSON_ID_TABLE" value="ROOT_PERSON_ID_TABLE" label="ROOT_PERSON_ID_TABLE" dataType="xsd:double" breakOrder="" fieldOrder="5"/>
+            </group>
+            <group name="G_2" label="G_2" source="1b">
+               <element name="PREPARER_BIND" value="PREPARER_BIND" label="PREPARER_BIND" dataType="xsd:double" breakOrder="" fieldOrder="1"/>
+               <element name="PREPARER_ON_HEADER" value="PREPARER_ON_HEADER" label="PREPARER_ON_HEADER" dataType="xsd:double" breakOrder="" fieldOrder="2"/>
+               <element name="BIND_CHECK" value="BIND_CHECK" label="BIND_CHECK" dataType="xsd:string" breakOrder="" fieldOrder="3"/>
+            </group>
+            <group name="G_3" label="G_3" source="9">
+               <element name="ROOT_TABLE" value="ROOT_TABLE" label="ROOT_TABLE" dataType="xsd:double" breakOrder="" fieldOrder="1"/>
+               <element name="ROOT_BIND_PREPARER" value="ROOT_BIND_PREPARER" label="ROOT_BIND_PREPARER" dataType="xsd:double" breakOrder="" fieldOrder="2"/>
+               <element name="COMPARE_ROOT" value="COMPARE_ROOT" label="COMPARE_ROOT" dataType="xsd:string" breakOrder="" fieldOrder="3"/>
+            </group>
+            <group name="G_4" label="G_4" source="2">
+               <element name="REQUISITION_HEADER_ID" value="REQUISITION_HEADER_ID" label="REQUISITION_HEADER_ID" dataType="xsd:double" breakOrder="" fieldOrder="1"/>
+               <element name="INV_TOTAL" value="INV_TOTAL" label="INV_TOTAL" dataType="xsd:double" breakOrder="" fieldOrder="2"/>
+               <element name="EXP_TOTAL" value="EXP_TOTAL" label="EXP_TOTAL" dataType="xsd:double" breakOrder="" fieldOrder="3"/>
+            </group>
+            <group name="G_5" label="G_5" source="3">
+               <element name="INV_TOTAL_AGG" value="INV_TOTAL_AGG" label="INV_TOTAL_AGG" dataType="xsd:double" breakOrder="" fieldOrder="1"/>
+               <element name="EXP_TOTAL_AGG" value="EXP_TOTAL_AGG" label="EXP_TOTAL_AGG" dataType="xsd:double" breakOrder="" fieldOrder="2"/>
+            </group>
+            <group name="G_6" label="G_6" source="4">
+               <element name="CHAIN_ROWS" value="CHAIN_ROWS" label="CHAIN_ROWS" dataType="xsd:double" breakOrder="" fieldOrder="1"/>
+               <element name="MIN_LVL" value="MIN_LVL" label="MIN_LVL" dataType="xsd:double" breakOrder="" fieldOrder="2"/>
+               <element name="MAX_LVL" value="MAX_LVL" label="MAX_LVL" dataType="xsd:double" breakOrder="" fieldOrder="3"/>
+            </group>
+            <group name="G_7" label="G_7" source="5">
+               <element name="LOOKUP_CODE" value="LOOKUP_CODE" label="LOOKUP_CODE" dataType="xsd:string" breakOrder="" fieldOrder="1"/>
+               <element name="MEANING" value="MEANING" label="MEANING" dataType="xsd:string" breakOrder="" fieldOrder="2"/>
+               <element name="DESCRIPTION" value="DESCRIPTION" label="DESCRIPTION" dataType="xsd:string" breakOrder="" fieldOrder="3"/>
+               <element name="TAG" value="TAG" label="TAG" dataType="xsd:string" breakOrder="" fieldOrder="4"/>
+               <element name="ENABLED_FLAG" value="ENABLED_FLAG" label="ENABLED_FLAG" dataType="xsd:string" breakOrder="" fieldOrder="5"/>
+               <element name="START_DATE_ACTIVE" value="START_DATE_ACTIVE" label="START_DATE_ACTIVE" dataType="xsd:date" breakOrder="" fieldOrder="6" formatMask=""/>
+               <element name="END_DATE_ACTIVE" value="END_DATE_ACTIVE" label="END_DATE_ACTIVE" dataType="xsd:date" breakOrder="" fieldOrder="7" formatMask=""/>
+               <element name="TOTAL_MATCHING_ROWS" value="TOTAL_MATCHING_ROWS" label="TOTAL_MATCHING_ROWS" dataType="xsd:double" breakOrder="" fieldOrder="8"/>
+            </group>
+            <group name="G_8" label="G_8" source="6">
+               <element name="LVL" value="LVL" label="LVL" dataType="xsd:long" breakOrder="" fieldOrder="1"/>
+               <element name="PERSON_ID" value="PERSON_ID" label="PERSON_ID" dataType="xsd:double" breakOrder="" fieldOrder="2"/>
+               <element name="USERNAME" value="USERNAME" label="USERNAME" dataType="xsd:string" breakOrder="" fieldOrder="3"/>
+               <element name="APPROVER_NAME" value="APPROVER_NAME" label="APPROVER_NAME" dataType="xsd:string" breakOrder="" fieldOrder="4"/>
+               <element name="GRADE_LOOKUP_CODE" value="GRADE_LOOKUP_CODE" label="GRADE_LOOKUP_CODE" dataType="xsd:string" breakOrder="" fieldOrder="5"/>
+               <element name="EXP_CAP" value="EXP_CAP" label="EXP_CAP" dataType="xsd:double" breakOrder="" fieldOrder="6"/>
+               <element name="INV_CAP" value="INV_CAP" label="INV_CAP" dataType="xsd:double" breakOrder="" fieldOrder="7"/>
+               <element name="CAN_APPROVE" value="CAN_APPROVE" label="CAN_APPROVE" dataType="xsd:double" breakOrder="" fieldOrder="8"/>
+            </group>
+            <group name="G_9" label="G_9" source="7">
+               <element name="SCORED_ROWS" value="SCORED_ROWS" label="SCORED_ROWS" dataType="xsd:double" breakOrder="" fieldOrder="1"/>
+               <element name="SUM_CAN_APPROVE" value="SUM_CAN_APPROVE" label="SUM_CAN_APPROVE" dataType="xsd:double" breakOrder="" fieldOrder="2"/>
+               <element name="PASS_COUNT" value="PASS_COUNT" label="PASS_COUNT" dataType="xsd:double" breakOrder="" fieldOrder="3"/>
+               <element name="MIN_PASS_LVL" value="MIN_PASS_LVL" label="MIN_PASS_LVL" dataType="xsd:double" breakOrder="" fieldOrder="4"/>
+            </group>
+            <group name="G_10" label="G_10" source="8">
+               <element name="LVL" value="LVL" label="LVL" dataType="xsd:long" breakOrder="" fieldOrder="1"/>
+               <element name="PERSON_ID" value="PERSON_ID" label="PERSON_ID" dataType="xsd:double" breakOrder="" fieldOrder="2"/>
+               <element name="CNT" value="CNT" label="CNT" dataType="xsd:double" breakOrder="" fieldOrder="3"/>
+            </group>
+         </dataStructure>
+      </nodeList>
+   </output>
+   <eventTriggers/>
+   <lexicals/>
+   <parameters>
+      <parameter name="one_grade_lookup_code" dataType="xsd:string" rowPlacement="1">
+         <input label="one_grade_lookup_code"/>
+      </parameter>
+      <parameter name="preparer_person_id" dataType="xsd:string" rowPlacement="1">
+         <input label="preparer_person_id"/>
+      </parameter>
+      <parameter name="req_header_id" dataType="xsd:string" rowPlacement="1">
+         <input label="req_header_id"/>
+      </parameter>
+   </parameters>
+   <valueSets/>
+   <bursting/>
+   <validations>
+      <validation>N</validation>
+   </validations>
+   <display>
+      <layouts>
+         <layout name="1" left="280px" top="0px"/>
+         <layout name="1b" left="560px" top="0px"/>
+         <layout name="9" left="840px" top="0px"/>
+         <layout name="2" left="1120px" top="0px"/>
+         <layout name="3" left="1400px" top="0px"/>
+         <layout name="4" left="1680px" top="0px"/>
+         <layout name="5" left="1960px" top="0px"/>
+         <layout name="6" left="2240px" top="0px"/>
+         <layout name="7" left="2520px" top="0px"/>
+         <layout name="8" left="2800px" top="0px"/>
+         <layout name="DATA_DS" left="0px" top="34px"/>
+      </layouts>
+      <groupLinks/>
+   </display>
+</dataModel>
