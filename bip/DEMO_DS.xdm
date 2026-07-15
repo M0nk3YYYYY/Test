@@ -1,0 +1,49 @@
+<?xml version = '1.0' encoding = 'utf-8'?>
+<dataModel xmlns="http://xmlns.oracle.com/oxp/xmlp" version="2.1" xmlns:xdm="http://xmlns.oracle.com/oxp/xmlp" xmlns:xsd="http://wwww.w3.org/2001/XMLSchema">
+   <dataProperties>
+      <property name="include_parameters" value="true"/>
+      <property name="include_null_Element" value="false"/>
+      <property name="include_rowsettag" value="false"/>
+      <property name="exclude_tags_for_lob" value="false"/>
+      <property name="EXCLUDE_LINE_FEED_AND_CARRIAGE_RETURN_FOR_LOB" value="false"/>
+      <property name="xml_tag_case" value="upper"/>
+      <property name="enforce_validation_status" value="true"/>
+      <property name="optimize_query_executions" value="false"/>
+      <property name="enable_xml_chunks" value=""/>
+      <property name="sql_monitor_report_generated" value="false"/>
+   </dataProperties>
+   <dataSets>
+      <dataSet name="DEMO_DS" type="complex">
+         <sql dataSourceRef="ApplicationDB_FSCM">
+            <![CDATA[SELECT invoice_num,source,description from ap_invoices_all]]>
+         </sql>
+      </dataSet>
+   </dataSets>
+   <output rootName="DATA_DS" uniqueRowName="false">
+      <nodeList name="data-structure">
+         <dataStructure tagName="DATA_DS">
+            <group name="G_1" label="G_1" source="DEMO_DS">
+               <element name="INVOICE_NUM" value="INVOICE_NUM" label="INVOICE_NUM" dataType="xsd:string" breakOrder="" fieldOrder="1"/>
+               <element name="SOURCE" value="SOURCE" label="SOURCE" dataType="xsd:string" breakOrder="" fieldOrder="2"/>
+               <element name="DESCRIPTION" value="DESCRIPTION" label="DESCRIPTION" dataType="xsd:string" breakOrder="" fieldOrder="3"/>
+            </group>
+         </dataStructure>
+      </nodeList>
+   </output>
+   <eventTriggers/>
+   <lexicals/>
+   <parameters/>
+   <valueSets/>
+   <bursting/>
+   <metadata/>
+   <validations>
+      <validation>N</validation>
+   </validations>
+   <display>
+      <layouts>
+         <layout name="DEMO_DS" left="280px" top="0px"/>
+         <layout name="DATA_DS" left="0px" top="291px"/>
+      </layouts>
+      <groupLinks/>
+   </display>
+</dataModel>
